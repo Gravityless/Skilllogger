@@ -1,0 +1,54 @@
+# ===== Python =====
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+dist/
+*.egg-info/
+.eggs/
+.venv/
+venv/
+env/
+ENV/
+pip-log.txt
+
+# ===== 项目数据 =====
+# SQLite 埋点数据库（包含真实用户上报数据，不应入库）
+server/telemetry.db
+server/telemetry.db-journal
+server/telemetry.db-wal
+server/telemetry.db-shm
+*.db
+
+# Server 运行日志
+server/*.log
+*.log
+
+# ===== Client 本地队列（如有人在仓库本地调试时产生）=====
+.cache/skill-telemetry/
+
+# ===== 编辑器 / IDE =====
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.project
+.settings/
+
+# ===== 操作系统 =====
+.DS_Store
+Thumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+ehthumbs.db
+
+# ===== 环境变量 / 密钥 =====
+.env
+.env.local
+.env.*.local
+*.pem
+*.key
+secrets/

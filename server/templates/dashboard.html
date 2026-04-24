@@ -1,0 +1,226 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>Skill 调用埋点 · 控制台</title>
+<style>
+  * { box-sizing: border-box; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
+                 "Microsoft YaHei", sans-serif;
+    margin: 0; padding: 24px;
+    background: #f5f7fa; color: #1f2937;
+  }
+  h1 { margin: 0 0 16px; font-size: 22px; }
+  .panel { background: #fff; border-radius: 8px; padding: 16px 20px;
+           box-shadow: 0 1px 3px rgba(0,0,0,0.06); margin-bottom: 16px; }
+  .filters { display: grid; grid-template-columns: repeat(6, minmax(140px, 1fr));
+             gap: 12px; align-items: end; }
+  .filters label { display: flex; flex-direction: column; font-size: 12px;
+                   color: #6b7280; gap: 4px; }
+  .filters input, .filters select {
+    padding: 6px 8px; border: 1px solid #d1d5db; border-radius: 4px;
+    font-size: 14px; background: #fff;
+  }
+  .actions { display: flex; gap: 8px; }
+  button {
+    padding: 7px 14px; border: none; border-radius: 4px; cursor: pointer;
+    font-size: 14px; font-weight: 500;
+  }
+  .btn-primary { background: #2563eb; color: #fff; }
+  .btn-primary:hover { background: #1d4ed8; }
+  .btn-secondary { background: #e5e7eb; color: #1f2937; }
+  .btn-secondary:hover { background: #d1d5db; }
+  .kpis { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; }
+  .kpi { background: #fff; border-radius: 8px; padding: 16px 20px;
+         box-shadow: 0 1px 3px rgba(0,0,0,0.06); }
+  .kpi .label { font-size: 12px; color: #6b7280; }
+  .kpi .value { font-size: 28px; font-weight: 600; margin-top: 4px; color: #111827; }
+  table { width: 100%; border-collapse: collapse; }
+  th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid #e5e7eb;
+           font-size: 14px; }
+  th { background: #f9fafb; cursor: pointer; user-select: none; font-weight: 600; }
+  th .arrow { color: #9ca3af; font-size: 11px; margin-left: 4px; }
+  tr:hover td { background: #f9fafb; }
+  .pagination { display: flex; align-items: center; gap: 8px; margin-top: 12px;
+                font-size: 13px; color: #6b7280; }
+  .pagination button { padding: 4px 10px; }
+  .empty { text-align: center; padding: 40px; color: #9ca3af; }
+  .loading { opacity: 0.5; pointer-events: none; }
+</style>
+</head>
+<body>
+
+<h1>Skill 调用埋点 · 控制台</h1>
+
+<div class="panel">
+  <div class="filters">
+    <label>用户名（模糊）
+      <input id="f-username" type="text" placeholder="例如 zhang">
+    </label>
+    <label>Skill 名（模糊）
+      <input id="f-skill" type="text" placeholder="例如 weather">
+    </label>
+    <label>起始日期
+      <input id="f-start" type="date">
+    </label>
+    <label>结束日期
+      <input id="f-end" type="date">
+    </label>
+    <label>聚合维度
+      <select id="f-group">
+        <option value="user_skill">用户 × Skill</option>
+        <option value="user">按用户</option>
+        <option value="skill">按 Skill</option>
+        <option value="day">按天</option>
+      </select>
+    </label>
+    <div class="actions">
+      <button class="btn-primary" onclick="loadData()">查询</button>
+      <button class="btn-secondary" onclick="resetFilters()">重置</button>
+      <button class="btn-secondary" onclick="exportCsv()">导出 CSV</button>
+    </div>
+  </div>
+</div>
+
+<div class="kpis">
+  <div class="kpi"><div class="label">总调用次数</div><div class="value" id="kpi-total">-</div></div>
+  <div class="kpi"><div class="label">独立用户数</div><div class="value" id="kpi-users">-</div></div>
+  <div class="kpi"><div class="label">独立 Skill 数</div><div class="value" id="kpi-skills">-</div></div>
+</div>
+
+<div class="panel" style="margin-top:16px;">
+  <div id="table-wrap">
+    <div class="empty">点击"查询"加载数据</div>
+  </div>
+  <div class="pagination" id="pagination" style="display:none;">
+    <button class="btn-secondary" onclick="prevPage()">上一页</button>
+    <span id="page-info"></span>
+    <button class="btn-secondary" onclick="nextPage()">下一页</button>
+    <span style="margin-left:auto;">每页
+      <select id="page-size" onchange="page=1; render();">
+        <option>20</option><option selected>50</option><option>100</option><option>200</option>
+      </select>
+    </span>
+  </div>
+</div>
+
+<script>
+let allRows = [];
+let page = 1;
+let sortKey = 'call_count';
+let sortDir = 'desc';
+
+function getFilters() {
+  const start = document.getElementById('f-start').value;
+  const end = document.getElementById('f-end').value;
+  const params = new URLSearchParams();
+  if (document.getElementById('f-username').value) params.set('username', document.getElementById('f-username').value);
+  if (document.getElementById('f-skill').value) params.set('skill', document.getElementById('f-skill').value);
+  if (start) params.set('start', start + 'T00:00:00');
+  if (end) params.set('end', end + 'T23:59:59');
+  params.set('group_by', document.getElementById('f-group').value);
+  return params;
+}
+
+async function loadData() {
+  const params = getFilters();
+  document.body.classList.add('loading');
+  try {
+    const res = await fetch('/stats/query?' + params.toString());
+    if (!res.ok) throw new Error('请求失败 ' + res.status);
+    const data = await res.json();
+    allRows = data.rows || [];
+    document.getElementById('kpi-total').textContent = (data.kpis.total_calls || 0).toLocaleString();
+    document.getElementById('kpi-users').textContent = (data.kpis.unique_users || 0).toLocaleString();
+    document.getElementById('kpi-skills').textContent = (data.kpis.unique_skills || 0).toLocaleString();
+    page = 1;
+    render();
+  } catch (e) {
+    document.getElementById('table-wrap').innerHTML =
+      '<div class="empty" style="color:#dc2626;">加载失败: ' + e.message + '</div>';
+  } finally {
+    document.body.classList.remove('loading');
+  }
+}
+
+function exportCsv() {
+  const params = getFilters();
+  params.set('format', 'csv');
+  window.location.href = '/stats/query?' + params.toString();
+}
+
+function resetFilters() {
+  document.getElementById('f-username').value = '';
+  document.getElementById('f-skill').value = '';
+  document.getElementById('f-start').value = '';
+  document.getElementById('f-end').value = '';
+  document.getElementById('f-group').value = 'user_skill';
+  loadData();
+}
+
+function sortBy(key) {
+  if (sortKey === key) sortDir = (sortDir === 'asc' ? 'desc' : 'asc');
+  else { sortKey = key; sortDir = 'desc'; }
+  render();
+}
+
+function render() {
+  const wrap = document.getElementById('table-wrap');
+  if (!allRows.length) {
+    wrap.innerHTML = '<div class="empty">无数据</div>';
+    document.getElementById('pagination').style.display = 'none';
+    return;
+  }
+  const cols = Object.keys(allRows[0]);
+  const sorted = [...allRows].sort((a, b) => {
+    let av = a[sortKey], bv = b[sortKey];
+    if (av == null) av = '';
+    if (bv == null) bv = '';
+    if (typeof av === 'number' && typeof bv === 'number') {
+      return sortDir === 'asc' ? av - bv : bv - av;
+    }
+    return sortDir === 'asc'
+      ? String(av).localeCompare(String(bv))
+      : String(bv).localeCompare(String(av));
+  });
+
+  const pageSize = parseInt(document.getElementById('page-size').value, 10);
+  const totalPages = Math.max(1, Math.ceil(sorted.length / pageSize));
+  if (page > totalPages) page = totalPages;
+  const slice = sorted.slice((page - 1) * pageSize, page * pageSize);
+
+  let html = '<table><thead><tr>';
+  for (const c of cols) {
+    const arrow = sortKey === c ? (sortDir === 'asc' ? '▲' : '▼') : '';
+    html += `<th onclick="sortBy('${c}')">${c}<span class="arrow">${arrow}</span></th>`;
+  }
+  html += '</tr></thead><tbody>';
+  for (const row of slice) {
+    html += '<tr>';
+    for (const c of cols) {
+      const v = row[c];
+      html += '<td>' + (v == null ? '' : String(v)) + '</td>';
+    }
+    html += '</tr>';
+  }
+  html += '</tbody></table>';
+  wrap.innerHTML = html;
+
+  document.getElementById('pagination').style.display = 'flex';
+  document.getElementById('page-info').textContent =
+    `第 ${page} / ${totalPages} 页 · 共 ${sorted.length} 条`;
+}
+
+function prevPage() { if (page > 1) { page--; render(); } }
+function nextPage() {
+  const pageSize = parseInt(document.getElementById('page-size').value, 10);
+  const totalPages = Math.max(1, Math.ceil(allRows.length / pageSize));
+  if (page < totalPages) { page++; render(); }
+}
+
+// 启动时自动加载一次
+loadData();
+</script>
+</body>
+</html>
