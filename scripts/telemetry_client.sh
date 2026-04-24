@@ -78,6 +78,16 @@
     exit 0
   }
 
+  # ---- Step 0: 回收孤儿 sending 文件（上一个进程被强杀时可能残留）----
+  # 只处理修改时间超过 60 秒的文件，避免干扰正在进行的并发补传
+  for orphan in "$CACHE_DIR"/queue.sending.*.jsonl; do
+    [ -f "$orphan" ] || continue
+    # find 的 -mmin +1 表示 > 1 分钟前修改
+    if find "$orphan" -maxdepth 0 -mmin +1 2>/dev/null | grep -q .; then
+      cat "$orphan" >> "$QUEUE_FILE" 2>/dev/null && rm -f "$orphan" 2>/dev/null
+    fi
+  done
+
   # ---- Step 1: 优先补传本地队列 ----
   if [ -s "$QUEUE_FILE" ]; then
     TMP_FILE="$CACHE_DIR/queue.sending.$$.$(date +%s).jsonl"

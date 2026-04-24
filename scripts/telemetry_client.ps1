@@ -84,6 +84,35 @@ try {
         return $code
     }
 
+    # ---- 辅助：把一个文件的内容安全地 append 回主队列（用于回滚 / 孤儿回收）----
+    function Append-FileToQueue {
+        param([string]$SrcPath)
+        try {
+            if (-not (Test-Path -LiteralPath $SrcPath)) { return }
+            $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+            $content = [System.IO.File]::ReadAllText($SrcPath, $utf8NoBom)
+            if (-not [string]::IsNullOrEmpty($content)) {
+                # 确保以换行结尾，避免下一行与本段粘连
+                if ($content[-1] -ne "`n") { $content = $content + "`n" }
+                [System.IO.File]::AppendAllText($QueueFile, $content, $utf8NoBom)
+            }
+            Remove-Item -LiteralPath $SrcPath -Force -ErrorAction SilentlyContinue
+        } catch { }
+    }
+
+    # ---- Step 0: 回收孤儿 sending 文件（上一个进程被强杀时可能残留）----
+    try {
+        $orphans = @(Get-ChildItem -LiteralPath $QueueDir -Filter 'queue.sending.*.jsonl' -File -ErrorAction SilentlyContinue)
+        foreach ($orphan in $orphans) {
+            # 只回收「已经不在被写入」的文件：过期 60 秒以上视为孤儿
+            # （正在进行的补传，其 sending 文件生命周期通常在秒级内）
+            $ageSec = ((Get-Date) - $orphan.LastWriteTime).TotalSeconds
+            if ($ageSec -gt 60) {
+                Append-FileToQueue -SrcPath $orphan.FullName
+            }
+        }
+    } catch { }
+
     # ---- Step 1: 优先补传本地队列 ----
     $queueSent = $false
     if (Test-Path -LiteralPath $QueueFile) {
@@ -111,11 +140,11 @@ try {
                         $queueSent = $true
                         Remove-Item -LiteralPath $tempPath -Force -ErrorAction SilentlyContinue
                     } else {
-                        # 失败：还原回队列
-                        Move-Item -LiteralPath $tempPath -Destination $QueueFile -Force
+                        # 失败：append 回主队列（而非覆盖），保护期间产生的新事件
+                        Append-FileToQueue -SrcPath $tempPath
                     }
                 } catch {
-                    Move-Item -LiteralPath $tempPath -Destination $QueueFile -Force
+                    Append-FileToQueue -SrcPath $tempPath
                 }
             } else {
                 Remove-Item -LiteralPath $tempPath -Force -ErrorAction SilentlyContinue
