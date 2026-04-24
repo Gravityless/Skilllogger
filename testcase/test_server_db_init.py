@@ -20,21 +20,25 @@ from common.server_fixture import TelemetryServer, _make_tmpdir  # noqa: E402
 
 def _seed_db(db_path: Path):
     db_path.parent.mkdir(parents=True, exist_ok=True)
-    with sqlite3.connect(db_path) as c:
-        c.execute(
+    # 注意: sqlite3 的 with-as 上下文只 commit/rollback, 不会关闭连接.
+    # Windows 上未关闭的连接会持有文件句柄, 导致后续 rename 失败.
+    conn = sqlite3.connect(db_path)
+    try:
+        conn.execute(
             "CREATE TABLE IF NOT EXISTS events ("
             "id INTEGER PRIMARY KEY AUTOINCREMENT, username TEXT NOT NULL, "
             "skill TEXT NOT NULL, hostname TEXT, client_ts TEXT NOT NULL, "
             "server_ts TEXT NOT NULL, client_version TEXT)"
         )
-        c.execute(
+        conn.execute(
             "INSERT INTO events (username, skill, hostname, client_ts, server_ts, client_version) "
             "VALUES (?, ?, ?, ?, ?, ?)",
             ("seed_user", "seed_skill", "h", "2024-01-01T00:00:00Z",
              "2024-01-01T00:00:00Z", "0.0.0"),
         )
-        c.commit()
-    # 在 Windows 上确保 sqlite 文件句柄真正释放，避免 server 启动时 rename 失败
+        conn.commit()
+    finally:
+        conn.close()
     import gc
     gc.collect()
 
@@ -49,10 +53,13 @@ class ServerDbInitTests(unittest.TestCase):
                 self.assertTrue(srv.db_path.exists(),
                                 "db file should be created on startup")
                 # events 表存在
-                with sqlite3.connect(srv.db_path) as c:
-                    rows = c.execute(
+                conn = sqlite3.connect(srv.db_path)
+                try:
+                    rows = conn.execute(
                         "SELECT name FROM sqlite_master WHERE type='table' AND name='events'"
                     ).fetchall()
+                finally:
+                    conn.close()
                 self.assertEqual(len(rows), 1)
                 self.assertEqual(srv.count_events(), 0)
 
@@ -81,8 +88,11 @@ class ServerDbInitTests(unittest.TestCase):
 
 
 def _count(db: Path) -> int:
-    with sqlite3.connect(db) as c:
-        return c.execute("SELECT COUNT(*) FROM events").fetchone()[0]
+    conn = sqlite3.connect(db)
+    try:
+        return conn.execute("SELECT COUNT(*) FROM events").fetchone()[0]
+    finally:
+        conn.close()
 
 
 if __name__ == "__main__":
