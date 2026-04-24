@@ -23,6 +23,7 @@ import io
 import os
 import shutil
 import sqlite3
+import time
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
@@ -54,14 +55,30 @@ def init_db() -> None:
     if reset and db_existed:
         ts = datetime.now().strftime("%Y%m%d-%H%M%S")
         backup = DB_PATH.with_name(f"{DB_PATH.name}.bak.{ts}")
-        # 重命名 (跨文件系统时退化为复制+删除)
-        try:
-            DB_PATH.rename(backup)
-        except OSError:
-            shutil.copy2(DB_PATH, backup)
-            DB_PATH.unlink(missing_ok=True)
-        print(f"[telemetry] reset db, backup -> {backup}", flush=True)
-        db_existed = False
+        # Windows 上前一个进程刚释放 SQLite 文件可能仍被内核短暂占用，重试几次
+        last_err: Optional[BaseException] = None
+        for attempt in range(10):
+            try:
+                DB_PATH.rename(backup)
+                last_err = None
+                break
+            except OSError as exc:
+                last_err = exc
+                # 跨文件系统时 rename 失败：尝试 copy + unlink
+                try:
+                    shutil.copy2(DB_PATH, backup)
+                    DB_PATH.unlink(missing_ok=True)
+                    last_err = None
+                    break
+                except OSError as exc2:
+                    last_err = exc2
+                    time.sleep(0.2)
+        if last_err is not None:
+            # 实在备份不掉旧库就放弃 reset，保留旧库（绝不丢数据）
+            print(f"[telemetry] WARN: cannot backup old db ({last_err}); keep using existing", flush=True)
+        else:
+            print(f"[telemetry] reset db, backup -> {backup}", flush=True)
+            db_existed = False
 
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)
 

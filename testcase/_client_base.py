@@ -14,7 +14,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from common.server_fixture import TelemetryServer
+from common.server_fixture import TelemetryServer, _make_tmpdir
 from common import client_runner
 
 
@@ -38,7 +38,7 @@ class _ClientTestMixin:
 
     # ---- C1 ----
     def test_C1_online_single_report(self):
-        with tempfile.TemporaryDirectory() as tmp, TelemetryServer() as srv:
+        with _make_tmpdir() as tmp, TelemetryServer() as srv:
             qd = self._make_queue_dir(Path(tmp))
             r = self._run("skill_C1", qd, srv.url)
             self.assertEqual(r.returncode, 0, msg=r.stderr.decode("utf-8", "replace"))
@@ -46,7 +46,7 @@ class _ClientTestMixin:
 
     # ---- C2 ----
     def test_C2_offline_enqueue(self):
-        with tempfile.TemporaryDirectory() as tmp:
+        with _make_tmpdir() as tmp:
             qd = self._make_queue_dir(Path(tmp))
             # 指向一个肯定关闭的端口
             r = self._run("skill_C2", qd, "http://127.0.0.1:1")
@@ -60,7 +60,7 @@ class _ClientTestMixin:
 
     # ---- C3 ----
     def test_C3_offline_then_recover(self):
-        with tempfile.TemporaryDirectory() as tmp:
+        with _make_tmpdir() as tmp:
             qd = self._make_queue_dir(Path(tmp))
             # 第一次离线：落队列
             r1 = self._run("skill_C3", qd, "http://127.0.0.1:1")
@@ -81,7 +81,7 @@ class _ClientTestMixin:
 
     # ---- C4 ----
     def test_C4_orphan_recovered(self):
-        with tempfile.TemporaryDirectory() as tmp, TelemetryServer() as srv:
+        with _make_tmpdir() as tmp, TelemetryServer() as srv:
             qd = self._make_queue_dir(Path(tmp))
             # 造一个 5 分钟前的 sending 文件（视为孤儿）
             orphan = qd / "queue.sending.orphan_test.jsonl"
@@ -106,7 +106,7 @@ class _ClientTestMixin:
 
     # ---- C5 ----
     def test_C5_fresh_sending_kept(self):
-        with tempfile.TemporaryDirectory() as tmp, TelemetryServer() as srv:
+        with _make_tmpdir() as tmp, TelemetryServer() as srv:
             qd = self._make_queue_dir(Path(tmp))
             fresh = qd / "queue.sending.fresh_test.jsonl"
             event = {
@@ -129,7 +129,7 @@ class _ClientTestMixin:
 
     # ---- C6 ----
     def test_C6_missing_skill_silent(self):
-        with tempfile.TemporaryDirectory() as tmp, TelemetryServer() as srv:
+        with _make_tmpdir() as tmp, TelemetryServer() as srv:
             qd = self._make_queue_dir(Path(tmp))
             # 不传 skill_name
             r = self._run(None, qd, srv.url)
@@ -138,7 +138,7 @@ class _ClientTestMixin:
 
     # ---- C7 ----
     def test_C7_corrupted_queue_line_skipped(self):
-        with tempfile.TemporaryDirectory() as tmp, TelemetryServer() as srv:
+        with _make_tmpdir() as tmp, TelemetryServer() as srv:
             qd = self._make_queue_dir(Path(tmp))
             qf = self._queue_file(qd)
             good = {

@@ -15,7 +15,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from common.server_fixture import TelemetryServer  # noqa: E402
+from common.server_fixture import TelemetryServer, _make_tmpdir  # noqa: E402
 
 
 def _seed_db(db_path: Path):
@@ -34,12 +34,15 @@ def _seed_db(db_path: Path):
              "2024-01-01T00:00:00Z", "0.0.0"),
         )
         c.commit()
+    # 在 Windows 上确保 sqlite 文件句柄真正释放，避免 server 启动时 rename 失败
+    import gc
+    gc.collect()
 
 
 class ServerDbInitTests(unittest.TestCase):
 
     def test_S1_no_db_creates_new(self):
-        with tempfile.TemporaryDirectory() as tmp:
+        with _make_tmpdir() as tmp:
             db = Path(tmp) / "telemetry.db"
             self.assertFalse(db.exists())
             with TelemetryServer(db_path=db) as srv:
@@ -54,7 +57,7 @@ class ServerDbInitTests(unittest.TestCase):
                 self.assertEqual(srv.count_events(), 0)
 
     def test_S2_existing_db_preserved(self):
-        with tempfile.TemporaryDirectory() as tmp:
+        with _make_tmpdir() as tmp:
             db = Path(tmp) / "telemetry.db"
             _seed_db(db)
             self.assertEqual(_count(db), 1)
@@ -63,7 +66,7 @@ class ServerDbInitTests(unittest.TestCase):
                                  "existing data must be preserved on default start")
 
     def test_S3_force_new_db_backups_old(self):
-        with tempfile.TemporaryDirectory() as tmp:
+        with _make_tmpdir() as tmp:
             db = Path(tmp) / "telemetry.db"
             _seed_db(db)
             self.assertEqual(_count(db), 1)

@@ -1,0 +1,11 @@
+# Force LF for shell scripts so they remain executable on Windows checkout
+# (git default core.autocrlf=true would otherwise inject CRLF and break bash).
+*.sh         text eol=lf
+*.bash       text eol=lf
+*.py         text eol=lf
+*.yml        text eol=lf
+*.yaml       text eol=lf
+# PowerShell scripts: keep BOM + native line endings on each platform.
+# We do NOT want git to rewrite the BOM, so mark binary.
+*.ps1        binary
+*.psm1       binary

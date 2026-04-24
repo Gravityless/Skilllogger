@@ -28,6 +28,16 @@ from typing import Optional
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SERVER_DIR = REPO_ROOT / "server"
 
+IS_WINDOWS = sys.platform.startswith("win")
+
+
+def _make_tmpdir(prefix: str = "telemetry_test_"):
+    """跨版本/跨平台的 TemporaryDirectory；Windows 上忽略清理时的占用错误。"""
+    kwargs = {"prefix": prefix}
+    if sys.version_info >= (3, 10):
+        kwargs["ignore_cleanup_errors"] = True
+    return tempfile.TemporaryDirectory(**kwargs)
+
 
 def _free_port() -> int:
     s = socket.socket()
@@ -56,9 +66,9 @@ class TelemetryServer:
         new_db: bool = False,
         extra_env: Optional[dict] = None,
     ):
-        self._tmpdir: Optional[tempfile.TemporaryDirectory] = None
+        self._tmpdir = None
         if db_path is None:
-            self._tmpdir = tempfile.TemporaryDirectory(prefix="telemetry_test_")
+            self._tmpdir = _make_tmpdir()
             db_path = Path(self._tmpdir.name) / "telemetry.db"
         self.db_path = Path(db_path)
         self.port = _free_port()
@@ -120,12 +130,19 @@ class TelemetryServer:
                 self._proc.wait(timeout=5)
             except subprocess.TimeoutExpired:
                 self._proc.kill()
+                try:
+                    self._proc.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    pass
         if self._proc and self._proc.stdout:
             try:
                 self._proc.stdout.close()
             except Exception:
                 pass
         self._proc = None
+        # Windows 内核可能短暂保留 SQLite 文件句柄，给点时间释放
+        if IS_WINDOWS:
+            time.sleep(0.5)
 
     def __exit__(self, exc_type, exc, tb):
         self.stop()
