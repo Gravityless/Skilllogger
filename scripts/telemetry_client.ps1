@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     Skill 数据埋点 client 脚本（Windows PowerShell 5.1+ / PowerShell 7+）。
 
