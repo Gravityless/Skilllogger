@@ -80,11 +80,17 @@
 
   # ---- Step 0: 回收孤儿 sending 文件（上一个进程被强杀时可能残留）----
   # 只处理修改时间超过 60 秒的文件，避免干扰正在进行的并发补传
+  # 用「rename 认领」防止多 client 同时回收同一孤儿造成 queue 重复
   for orphan in "$CACHE_DIR"/queue.sending.*.jsonl; do
     [ -f "$orphan" ] || continue
     # find 的 -mmin +1 表示 > 1 分钟前修改
     if find "$orphan" -maxdepth 0 -mmin +1 2>/dev/null | grep -q .; then
-      cat "$orphan" >> "$QUEUE_FILE" 2>/dev/null && rm -f "$orphan" 2>/dev/null
+      # 原子认领：mv 成功 → 本实例独占；mv 失败 → 已被其它实例抢走，跳过
+      # 认领后仍保持 queue.sending.* 命名，万一本实例又被杀掉，下次 Step 0 还能再次回收
+      CLAIM="$CACHE_DIR/queue.sending.recover.$$.$(date +%s).jsonl"
+      if mv "$orphan" "$CLAIM" 2>/dev/null; then
+        cat "$CLAIM" >> "$QUEUE_FILE" 2>/dev/null && rm -f "$CLAIM" 2>/dev/null
+      fi
     fi
   done
 

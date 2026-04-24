@@ -104,6 +104,7 @@ try {
     }
 
     # ---- Step 0: 回收孤儿 sending 文件（上一个进程被强杀时可能残留）----
+    # 用「rename 认领」防止多 client 同时回收同一孤儿造成 queue 重复
     try {
         $orphans = @(Get-ChildItem -LiteralPath $QueueDir -Filter 'queue.sending.*.jsonl' -File -ErrorAction SilentlyContinue)
         foreach ($orphan in $orphans) {
@@ -111,7 +112,14 @@ try {
             # （正在进行的补传，其 sending 文件生命周期通常在秒级内）
             $ageSec = ((Get-Date) - $orphan.LastWriteTime).TotalSeconds
             if ($ageSec -gt 60) {
-                Append-FileToQueue -SrcPath $orphan.FullName
+                # 原子认领：Move-Item 成功 → 本实例独占；失败 → 已被其它实例抢走
+                # 仍用 queue.sending.* 命名，万一本实例又被杀掉，下次 Step 0 还能再次回收
+                $claimName = "queue.sending.recover.{0}.jsonl" -f ([guid]::NewGuid().ToString('N'))
+                $claimPath = Join-Path $QueueDir $claimName
+                try {
+                    Move-Item -LiteralPath $orphan.FullName -Destination $claimPath -ErrorAction Stop
+                    Append-FileToQueue -SrcPath $claimPath
+                } catch { }
             }
         }
     } catch { }
