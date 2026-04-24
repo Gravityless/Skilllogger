@@ -17,6 +17,8 @@ from _client_base import _ClientTestMixin  # noqa: E402
 
 @unittest.skipUnless(shutil.which("bash") and shutil.which("curl"),
                      "bash + curl required")
+@unittest.skipIf(sys.platform.startswith("win"),
+                 "bash client targets Unix; Windows users should use the PS client")
 class BashClientTests(_ClientTestMixin, unittest.TestCase):
     CLIENT_KIND = "bash"
     QUEUE_SUBDIR = "skill-telemetry"

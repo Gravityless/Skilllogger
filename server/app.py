@@ -55,9 +55,9 @@ def init_db() -> None:
     if reset and db_existed:
         ts = datetime.now().strftime("%Y%m%d-%H%M%S")
         backup = DB_PATH.with_name(f"{DB_PATH.name}.bak.{ts}")
-        # Windows 上前一个进程刚释放 SQLite 文件可能仍被内核短暂占用，重试几次
+        # Windows 上前一个进程刚释放 SQLite 文件可能仍被内核 / 杀软短暂占用，重试更久
         last_err: Optional[BaseException] = None
-        for attempt in range(10):
+        for attempt in range(30):
             try:
                 DB_PATH.rename(backup)
                 last_err = None
@@ -72,7 +72,7 @@ def init_db() -> None:
                     break
                 except OSError as exc2:
                     last_err = exc2
-                    time.sleep(0.2)
+                    time.sleep(0.5)
         if last_err is not None:
             # 实在备份不掉旧库就放弃 reset，保留旧库（绝不丢数据）
             print(f"[telemetry] WARN: cannot backup old db ({last_err}); keep using existing", flush=True)
