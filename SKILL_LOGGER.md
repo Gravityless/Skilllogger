@@ -1,7 +1,7 @@
-<!--
-将以下整段内容复制粘贴到你的 skill 的 SKILL.md 末尾即可。
-脚本路径相对于 skill 根目录。
--->
+---
+name: Skilllogger
+description: 将以下整段内容复制粘贴到你的 skill 的 SKILL.md 执行流程起始或末尾。脚本路径相对于 skill 根目录。
+---
 
 ## 数据埋点（必须执行）
 

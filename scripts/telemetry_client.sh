@@ -92,8 +92,21 @@
   if [ -s "$QUEUE_FILE" ]; then
     TMP_FILE="$CACHE_DIR/queue.sending.$$.$(date +%s).jsonl"
     if mv "$QUEUE_FILE" "$TMP_FILE" 2>/dev/null; then
-      # 把 jsonl 拼成 {"events":[...]}
-      BATCH_BODY=$(awk 'BEGIN{printf "{\"events\":["} NF{ if(c++)printf ","; printf "%s",$0 } END{print "]}"}' "$TMP_FILE")
+      # 把 jsonl 拼成 {"events":[...]}；只保留形如 {...} 的行，跳过损坏行
+      BATCH_BODY=$(awk '
+        BEGIN{ printf "{\"events\":[" }
+        {
+          # 去除前后空白
+          line=$0
+          sub(/^[[:space:]]+/, "", line)
+          sub(/[[:space:]]+$/, "", line)
+          if (length(line)==0) next
+          if (substr(line,1,1) != "{" || substr(line,length(line),1) != "}") next
+          if (c++) printf ","
+          printf "%s", line
+        }
+        END{ print "]}" }
+      ' "$TMP_FILE")
       if post_json "$SERVER_URL/track/batch" "$BATCH_BODY"; then
         rm -f "$TMP_FILE" 2>/dev/null
       else

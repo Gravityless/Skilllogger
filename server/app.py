@@ -8,12 +8,20 @@ Skill Telemetry Server
     uvicorn app:app --host 0.0.0.0 --port 8000
 
 数据库文件默认位于本脚本同目录下的 telemetry.db，可通过环境变量 TELEMETRY_DB 覆盖。
+
+数据库初始化策略 (启动时执行):
+    1. 若设置环境变量 TELEMETRY_NEW_DB=1 (或 true/yes) → 强制新建:
+       若旧库存在则重命名为 telemetry.db.bak.<时间戳> 备份, 再创建空库.
+    2. 否则:
+       - 库文件不存在 → 创建空库并建表.
+       - 库文件已存在 → 直接复用 (CREATE TABLE IF NOT EXISTS 兼容).
 """
 from __future__ import annotations
 
 import csv
 import io
 import os
+import shutil
 import sqlite3
 from contextlib import contextmanager
 from datetime import datetime, timezone
@@ -35,7 +43,28 @@ templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
 # ---------------------------------------------------------------------------
 # 数据库
 # ---------------------------------------------------------------------------
+def _truthy(val: Optional[str]) -> bool:
+    return (val or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
 def init_db() -> None:
+    reset = _truthy(os.environ.get("TELEMETRY_NEW_DB"))
+    db_existed = DB_PATH.exists()
+
+    if reset and db_existed:
+        ts = datetime.now().strftime("%Y%m%d-%H%M%S")
+        backup = DB_PATH.with_name(f"{DB_PATH.name}.bak.{ts}")
+        # 重命名 (跨文件系统时退化为复制+删除)
+        try:
+            DB_PATH.rename(backup)
+        except OSError:
+            shutil.copy2(DB_PATH, backup)
+            DB_PATH.unlink(missing_ok=True)
+        print(f"[telemetry] reset db, backup -> {backup}", flush=True)
+        db_existed = False
+
+    DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+
     with sqlite3.connect(DB_PATH) as conn:
         conn.execute(
             """
@@ -55,6 +84,11 @@ def init_db() -> None:
         conn.execute("CREATE INDEX IF NOT EXISTS idx_events_user ON events(username)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_events_client_ts ON events(client_ts)")
         conn.commit()
+
+    if not db_existed:
+        print(f"[telemetry] created new db: {DB_PATH}", flush=True)
+    else:
+        print(f"[telemetry] using existing db: {DB_PATH}", flush=True)
 
 
 @contextmanager

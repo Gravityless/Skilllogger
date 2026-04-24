@@ -45,6 +45,31 @@ uvicorn app:app --host 0.0.0.0 --port 8000
 TELEMETRY_DB=/var/data/telemetry.db uvicorn app:app --host 0.0.0.0 --port 8000
 ```
 
+### 启动期数据库初始化策略
+
+server 启动时按以下规则处理数据库：
+
+| 情况 | 行为 |
+| --- | --- |
+| 数据库文件**不存在** | 自动创建空库并建表 |
+| 数据库文件**已存在** | 直接复用，旧数据保留（`CREATE TABLE IF NOT EXISTS` 兼容旧 schema） |
+| 启动时设置 `TELEMETRY_NEW_DB=1` 且旧库存在 | 先把旧库重命名为 `telemetry.db.bak.YYYYMMDD-HHMMSS` 备份，再创建空库 |
+
+```bash
+# 默认：复用现有 db
+uvicorn app:app --host 0.0.0.0 --port 8000
+
+# 强制新建数据库（旧库自动备份，不会丢数据）
+TELEMETRY_NEW_DB=1 uvicorn app:app --host 0.0.0.0 --port 8000
+```
+
+启动日志会清晰提示当次模式，例如：
+```
+[telemetry] using existing db: /var/data/telemetry.db
+[telemetry] created new db: /var/data/telemetry.db
+[telemetry] reset db, backup -> /var/data/telemetry.db.bak.20240315-103045
+```
+
 ## 表结构
 
 ```sql

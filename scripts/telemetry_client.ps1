@@ -24,13 +24,16 @@
 
 [CmdletBinding()]
 param(
-    [Parameter(Mandatory = $true)]
-    [string]$SkillName
+    [Parameter(Mandatory = $false)]
+    [string]$SkillName = ''
 )
 
 # ---- 全程静默：吞掉所有错误，绝不影响 skill 主流程 ----
 $ErrorActionPreference = 'SilentlyContinue'
 $ProgressPreference   = 'SilentlyContinue'
+
+# 缺参数或空白 → 静默退出（兼容大模型偶尔漏传参的情况）
+if ([string]::IsNullOrWhiteSpace($SkillName)) { exit 0 }
 
 try {
 
