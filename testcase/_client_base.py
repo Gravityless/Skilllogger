@@ -113,6 +113,7 @@ class _ClientTestMixin:
             # 造一个 5 分钟前的 sending 文件（视为孤儿）
             orphan = qd / "queue.sending.orphan_test.jsonl"
             event = {
+                "event_id": "c4orphanevent000000000000000001",
                 "username": "tester",
                 "skill": "skill_C4_orphan",
                 "hostname": "h",
@@ -139,6 +140,7 @@ class _ClientTestMixin:
             qd = self._make_queue_dir(Path(tmp))
             fresh = qd / "queue.sending.fresh_test.jsonl"
             event = {
+                "event_id": "c5freshevent0000000000000000001",
                 "username": "tester",
                 "skill": "skill_C5_fresh",
                 "hostname": "h",
@@ -173,6 +175,7 @@ class _ClientTestMixin:
             qd = self._make_queue_dir(Path(tmp))
             qf = self._queue_file(qd)
             good = {
+                "event_id": "c7goodevent00000000000000000001",
                 "username": "tester",
                 "skill": "skill_C7_good",
                 "hostname": "h",

@@ -148,11 +148,8 @@ CREATE TABLE events (
     client_ts       TEXT NOT NULL,   -- 客户端 ISO8601 时间戳 (UTC)
     server_ts       TEXT NOT NULL,   -- 服务端入库时间戳 (UTC)
     client_version  TEXT,
-    event_id        TEXT             -- 客户端生成的 UUID，用于服务端幂等去重
+    event_id        TEXT NOT NULL UNIQUE  -- 客户端生成的 UUID，用于服务端幂等去重
 );
--- 部分唯一索引：仅约束有 event_id 的行，老数据 / 老 client (event_id NULL) 不受影响
-CREATE UNIQUE INDEX uq_events_event_id
-    ON events(event_id) WHERE event_id IS NOT NULL;
 ```
 
 每次 skill 调用 = 一条明细记录，便于后续任意维度的聚合分析。`event_id` 由 client 在事件第一次构造时生成，重传时**复用同一 id**；服务端 `INSERT OR IGNORE` 保证同一 `event_id` 永远只入库一次。
@@ -208,7 +205,7 @@ Client 脚本经过特别设计，确保在任何用户机器上都能跑：
 | 不变式 | 实现机制 |
 |---|---|
 | **绝不丢事件** | 失败必入本地 JSONL 队列；下次任意调用都会优先补传 |
-| **绝不重复入库（exactly-once）** | client 在事件构造时生成稳定的 `event_id`（UUID），重传永远复用同一 id；server 端 `INSERT OR IGNORE` + 部分唯一索引 → 同一 id 仅入库 1 次 |
+| **绝不重复入库（exactly-once）** | client 在事件构造时生成稳定的 `event_id`（UUID），重传永远复用同一 id；server 端 `INSERT OR IGNORE` + `UNIQUE` 约束 → 同一 id 仅入库 1 次 |
 | **绝不打断 skill** | 子 shell + `try{}` 包裹；`set +e`、`$ErrorActionPreference='SilentlyContinue'`；强制 `exit 0` |
 | **3 秒内必返回** | curl `--max-time 3` / HttpWebRequest `Timeout=3000`；显式禁用代理避免被代理拖慢 |
 | **多实例并发不重复消费队列** | 队列消费用 rename 原子认领；新事件用 append-only |
@@ -238,7 +235,7 @@ Client 脚本经过特别设计，确保在任何用户机器上都能跑：
 | `GET /stats/summary` `/by_user` `/by_skill` | 便捷接口 | 是 `stats_query` 不同 `group_by` 的快捷封装 |
 | `GET /` | 浏览器 | Web 控制台 |
 
-事件入库前由 Pydantic 校验：`username` `skill` 必填，`timestamp` 必填；`event_id` 可选（兼容老 client），长度 1–64；`server_ts` 由服务端补充为入库时刻 UTC。
+事件入库前由 Pydantic 校验：`username` `skill` `timestamp` `event_id` 均必填（`event_id` 长度 1–64）；`server_ts` 由服务端补充为入库时刻 UTC。
 
 ### 6.5 失败模式 & 数据保证总结
 

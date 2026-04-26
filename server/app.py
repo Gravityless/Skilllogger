@@ -93,23 +93,14 @@ def init_db() -> None:
                 client_ts       TEXT NOT NULL,
                 server_ts       TEXT NOT NULL,
                 client_version  TEXT,
-                event_id        TEXT
+                event_id        TEXT NOT NULL UNIQUE
             )
             """
         )
-        # 旧库迁移：若 events 表是老结构，则补充 event_id 列
-        existing_cols = {row[1] for row in conn.execute("PRAGMA table_info(events)").fetchall()}
-        if "event_id" not in existing_cols:
-            conn.execute("ALTER TABLE events ADD COLUMN event_id TEXT")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_events_user_skill ON events(username, skill)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_events_skill ON events(skill)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_events_user ON events(username)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_events_client_ts ON events(client_ts)")
-        # 部分唯一索引：仅对带 event_id 的行去重，老数据 / 老 client（event_id NULL）不受约束
-        conn.execute(
-            "CREATE UNIQUE INDEX IF NOT EXISTS uq_events_event_id "
-            "ON events(event_id) WHERE event_id IS NOT NULL"
-        )
         conn.commit()
 
     if not db_existed:
@@ -142,11 +133,11 @@ class Event(BaseModel):
     hostname: Optional[str] = Field(None, max_length=128)
     timestamp: str = Field(..., description="客户端 ISO8601 时间戳")
     client_version: Optional[str] = Field(None, max_length=32)
-    event_id: Optional[str] = Field(
-        None,
+    event_id: str = Field(
+        ...,
         min_length=1,
         max_length=64,
-        description="客户端生成的事件唯一 ID，用于服务端幂等去重；老 client 可不传",
+        description="客户端生成的事件唯一 ID，用于服务端幂等去重",
     )
 
 
@@ -169,8 +160,7 @@ def _insert_events(events: List[Event]) -> tuple[int, int]:
     ]
     with db_conn() as conn:
         before = conn.total_changes
-        # ON CONFLICT(event_id) DO NOTHING 仅在 event_id 非 NULL 时由部分唯一索引兜底
-        # 老 client 不传 event_id → 行为同旧版（每次都插入）
+        # event_id 上的 UNIQUE 约束 + INSERT OR IGNORE 实现幂等去重
         conn.executemany(
             "INSERT OR IGNORE INTO events (event_id, username, skill, hostname, "
             "client_ts, server_ts, client_version) "

@@ -1,7 +1,7 @@
 # Skilllogger 测试套件
 
 使用 Python `unittest` 编排，覆盖 server 启动逻辑、server 端去重幂等性，以及两端
-client（bash / PowerShell）的全部关键场景。共 **23** 个用例，跨 Linux / macOS / Windows
+client（bash / PowerShell）的全部关键场景。共 **21** 个用例，跨 Linux / macOS / Windows
 三平台 CI 全绿。
 
 ## 目录结构
@@ -59,19 +59,15 @@ python -m unittest testcase.test_client_ps      -v
 | S2 | DB 文件已存在且含数据 | 默认启动应保留旧数据 |
 | S3 | 启动时设置 `TELEMETRY_NEW_DB=1` | 旧库被备份为 `telemetry.db.bak.<时间戳>`，新库为空 |
 
-### Server 端去重 / Schema 迁移（`test_server_dedup.py`）
+### Server 端去重（`test_server_dedup.py`）
 
 | ID | 场景 | 期望 |
 | --- | --- | --- |
 | S4 | 同 `event_id` 调 `/track` 两次 | 仅首次入库；第二次响应 `inserted=0` |
 | S5 | `/track/batch` 含 batch 内重复 + 跨次重发 | batch 内折叠 + 跨次去重，最终行数稳定 |
-| S6 | 不传 `event_id`（兼容老 client） | 部分唯一索引不约束 NULL → 每次都入库 |
-| S7 | 老 schema（无 `event_id` 列）启动 | 自动 `ALTER TABLE` 补列；老数据保留；新去重生效 |
 
-去重原理：`events.event_id TEXT` 列 + 部分唯一索引
-`UNIQUE INDEX uq_events_event_id ON events(event_id) WHERE event_id IS NOT NULL`，
-插入语句使用 `INSERT OR IGNORE`（注意：SQLite 的 `ON CONFLICT(col)` 子句**不能**匹配
-部分唯一索引，必须用 `OR IGNORE`，行为等价但能命中部分索引）。
+去重原理：`events.event_id TEXT NOT NULL UNIQUE` + `INSERT OR IGNORE`。
+（`event_id` 由 client 在事件构造时生成 UUID，重传永远复用同一 id。）
 
 ### Client 通用场景（PS / bash 各一套，C1-C8）
 
