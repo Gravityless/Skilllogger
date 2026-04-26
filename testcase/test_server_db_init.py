@@ -4,6 +4,11 @@ server 启动期 DB 初始化测试 (S1/S2/S3)。
 S1: 无 db 文件 → 启动后 db 被创建, events 表存在
 S2: 有 db 文件且含 1 条数据 → 默认启动 → 数据保留
 S3: 有 db 文件且含 1 条数据 → TELEMETRY_NEW_DB=1 → 数据清空 + 旧库被备份
+
+每个用例都通过 ``TelemetryServer`` 在子进程里以独立的 ``TELEMETRY_DB`` /
+``TELEMETRY_NEW_DB`` 启动一份真实的 uvicorn server，端到端验证 ``init_db()``
+的三态行为，而不是直接 import 函数 mock —— 这样能同时验证 FastAPI 的
+``@app.on_event("startup")`` 钩子也被正确触发。
 """
 from __future__ import annotations
 
@@ -19,9 +24,13 @@ from common.server_fixture import TelemetryServer, _make_tmpdir  # noqa: E402
 
 
 def _seed_db(db_path: Path):
+    """造一个老结构的 db 并写入 1 条数据，用于 S2/S3。
+
+    注意: ``with sqlite3.connect(...)`` 的上下文只 commit/rollback, **不会关闭连接**。
+    Windows 上未关闭的连接会持有文件句柄，导致后续 server 进程内的 rename / unlink 失败。
+    所以此处显式 ``conn.close()`` + ``gc.collect()`` 强制释放。
+    """
     db_path.parent.mkdir(parents=True, exist_ok=True)
-    # 注意: sqlite3 的 with-as 上下文只 commit/rollback, 不会关闭连接.
-    # Windows 上未关闭的连接会持有文件句柄, 导致后续 rename 失败.
     conn = sqlite3.connect(db_path)
     try:
         conn.execute(
@@ -46,6 +55,7 @@ def _seed_db(db_path: Path):
 class ServerDbInitTests(unittest.TestCase):
 
     def test_S1_no_db_creates_new(self):
+        """无 db 文件 → 启动后自动创建 + 建表 + 0 条记录。"""
         with _make_tmpdir() as tmp:
             db = Path(tmp) / "telemetry.db"
             self.assertFalse(db.exists())
@@ -64,6 +74,7 @@ class ServerDbInitTests(unittest.TestCase):
                 self.assertEqual(srv.count_events(), 0)
 
     def test_S2_existing_db_preserved(self):
+        """已有 db + 1 条数据 + 默认启动 → 数据保留。"""
         with _make_tmpdir() as tmp:
             db = Path(tmp) / "telemetry.db"
             _seed_db(db)
@@ -73,6 +84,7 @@ class ServerDbInitTests(unittest.TestCase):
                                  "existing data must be preserved on default start")
 
     def test_S3_force_new_db_backups_old(self):
+        """已有 db + 1 条 + TELEMETRY_NEW_DB=1 → 旧库被备份为 telemetry.db.bak.<ts>，新库为空。"""
         with _make_tmpdir() as tmp:
             db = Path(tmp) / "telemetry.db"
             _seed_db(db)
