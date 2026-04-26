@@ -158,3 +158,42 @@ class _ClientTestMixin:
             # 好行被上报；坏行被丢弃；当前事件被上报
             self.assertEqual(srv.count_events(skill="skill_C7_good"), 1)
             self.assertEqual(srv.count_events(skill="skill_C7_now"), 1)
+
+    # ---- C8: 模拟「server 已收但 client 在 rm sending 前被强杀」----
+    # 方法：手工造一个孤儿 sending 文件，里面带 event_id；client 第一次回收 + 上报；
+    # 然后再造一个内容完全相同（同 event_id）的孤儿 → client 第二次仍会回收并 POST，
+    # 但 server 端按 event_id 幂等去重，最终只入库 1 条。
+    def test_C8_dedup_by_event_id_on_orphan_replay(self):
+        with _make_tmpdir() as tmp, TelemetryServer() as srv:
+            qd = self._make_queue_dir(Path(tmp))
+            event_id = "c8testevent00000000000000000001"
+            event = {
+                "event_id": event_id,
+                "username": "tester",
+                "skill": "skill_C8_dup",
+                "hostname": "h",
+                "timestamp": "2024-01-01T00:00:00.000Z",
+                "client_version": "1.0.0",
+            }
+
+            # 第一次：造孤儿 → 触发 Step 0 → 上传
+            orphan1 = qd / "queue.sending.dup1.jsonl"
+            orphan1.write_text(json.dumps(event) + "\n", encoding="utf-8")
+            old_ts = time.time() - 5 * 60
+            os.utime(orphan1, (old_ts, old_ts))
+            r1 = self._run("skill_C8_now", qd, srv.url)
+            self.assertEqual(r1.returncode, 0)
+            self.assertEqual(srv.count_events(skill="skill_C8_dup"), 1)
+
+            # 第二次：再造一个内容相同（同 event_id）的孤儿 → client 仍会上传
+            # 但 server 必须按 event_id 去重，最终仍只有 1 条 skill_C8_dup
+            orphan2 = qd / "queue.sending.dup2.jsonl"
+            orphan2.write_text(json.dumps(event) + "\n", encoding="utf-8")
+            os.utime(orphan2, (old_ts, old_ts))
+            r2 = self._run("skill_C8_now2", qd, srv.url)
+            self.assertEqual(r2.returncode, 0)
+            self.assertEqual(
+                srv.count_events(skill="skill_C8_dup"),
+                1,
+                "server should dedup by event_id; same id must not insert twice",
+            )

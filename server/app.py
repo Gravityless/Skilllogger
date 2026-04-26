@@ -92,14 +92,24 @@ def init_db() -> None:
                 hostname        TEXT,
                 client_ts       TEXT NOT NULL,
                 server_ts       TEXT NOT NULL,
-                client_version  TEXT
+                client_version  TEXT,
+                event_id        TEXT
             )
             """
         )
+        # 旧库迁移：若 events 表是老结构，则补充 event_id 列
+        existing_cols = {row[1] for row in conn.execute("PRAGMA table_info(events)").fetchall()}
+        if "event_id" not in existing_cols:
+            conn.execute("ALTER TABLE events ADD COLUMN event_id TEXT")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_events_user_skill ON events(username, skill)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_events_skill ON events(skill)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_events_user ON events(username)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_events_client_ts ON events(client_ts)")
+        # 部分唯一索引：仅对带 event_id 的行去重，老数据 / 老 client（event_id NULL）不受约束
+        conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS uq_events_event_id "
+            "ON events(event_id) WHERE event_id IS NOT NULL"
+        )
         conn.commit()
 
     if not db_existed:
@@ -132,6 +142,12 @@ class Event(BaseModel):
     hostname: Optional[str] = Field(None, max_length=128)
     timestamp: str = Field(..., description="客户端 ISO8601 时间戳")
     client_version: Optional[str] = Field(None, max_length=32)
+    event_id: Optional[str] = Field(
+        None,
+        min_length=1,
+        max_length=64,
+        description="客户端生成的事件唯一 ID，用于服务端幂等去重；老 client 可不传",
+    )
 
 
 class BatchEvents(BaseModel):
@@ -142,22 +158,28 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def _insert_events(events: List[Event]) -> int:
+def _insert_events(events: List[Event]) -> tuple[int, int]:
+    """返回 (received, inserted)。inserted < received 表示部分被幂等去重丢弃。"""
     if not events:
-        return 0
+        return 0, 0
     server_ts = _now_iso()
     rows = [
-        (e.username, e.skill, e.hostname, e.timestamp, server_ts, e.client_version)
+        (e.event_id, e.username, e.skill, e.hostname, e.timestamp, server_ts, e.client_version)
         for e in events
     ]
     with db_conn() as conn:
+        before = conn.total_changes
+        # ON CONFLICT(event_id) DO NOTHING 仅在 event_id 非 NULL 时由部分唯一索引兜底
+        # 老 client 不传 event_id → 行为同旧版（每次都插入）
         conn.executemany(
-            "INSERT INTO events (username, skill, hostname, client_ts, server_ts, client_version) "
-            "VALUES (?, ?, ?, ?, ?, ?)",
+            "INSERT OR IGNORE INTO events (event_id, username, skill, hostname, "
+            "client_ts, server_ts, client_version) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
             rows,
         )
         conn.commit()
-    return len(rows)
+        inserted = conn.total_changes - before
+    return len(rows), inserted
 
 
 # ---------------------------------------------------------------------------
@@ -171,21 +193,21 @@ def health():
 @app.post("/track")
 def track(event: Event):
     try:
-        _insert_events([event])
+        received, inserted = _insert_events([event])
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc))
-    return {"ok": True, "received": 1}
+    return {"ok": True, "received": received, "inserted": inserted}
 
 
 @app.post("/track/batch")
 def track_batch(payload: BatchEvents):
     if not payload.events:
-        return {"ok": True, "received": 0}
+        return {"ok": True, "received": 0, "inserted": 0}
     try:
-        n = _insert_events(payload.events)
+        received, inserted = _insert_events(payload.events)
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc))
-    return {"ok": True, "received": n}
+    return {"ok": True, "received": received, "inserted": inserted}
 
 
 # ---------------------------------------------------------------------------

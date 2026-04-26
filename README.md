@@ -147,11 +147,15 @@ CREATE TABLE events (
     hostname        TEXT,
     client_ts       TEXT NOT NULL,   -- 客户端 ISO8601 时间戳 (UTC)
     server_ts       TEXT NOT NULL,   -- 服务端入库时间戳 (UTC)
-    client_version  TEXT
+    client_version  TEXT,
+    event_id        TEXT             -- 客户端生成的 UUID，用于服务端幂等去重
 );
+-- 部分唯一索引：仅约束有 event_id 的行，老数据 / 老 client (event_id NULL) 不受影响
+CREATE UNIQUE INDEX uq_events_event_id
+    ON events(event_id) WHERE event_id IS NOT NULL;
 ```
 
-每次 skill 调用 = 一条明细记录，便于后续任意维度的聚合分析。
+每次 skill 调用 = 一条明细记录，便于后续任意维度的聚合分析。`event_id` 由 client 在事件第一次构造时生成，重传时**复用同一 id**；服务端 `INSERT OR IGNORE` 保证同一 `event_id` 永远只入库一次。
 
 ---
 
@@ -204,9 +208,10 @@ Client 脚本经过特别设计，确保在任何用户机器上都能跑：
 | 不变式 | 实现机制 |
 |---|---|
 | **绝不丢事件** | 失败必入本地 JSONL 队列；下次任意调用都会优先补传 |
+| **绝不重复入库（exactly-once）** | client 在事件构造时生成稳定的 `event_id`（UUID），重传永远复用同一 id；server 端 `INSERT OR IGNORE` + 部分唯一索引 → 同一 id 仅入库 1 次 |
 | **绝不打断 skill** | 子 shell + `try{}` 包裹；`set +e`、`$ErrorActionPreference='SilentlyContinue'`；强制 `exit 0` |
 | **3 秒内必返回** | curl `--max-time 3` / HttpWebRequest `Timeout=3000`；显式禁用代理避免被代理拖慢 |
-| **多实例并发不重复** | 队列消费用 rename 原子认领；新事件用 append-only |
+| **多实例并发不重复消费队列** | 队列消费用 rename 原子认领；新事件用 append-only |
 | **跨用户名兼容** | bash: `$USER` → `id -un` → `unknown`；pwsh: `$env:USERNAME`；缓存路径基于 `$XDG_CACHE_HOME` / `$LOCALAPPDATA`，兼容中文用户名 |
 | **跨平台时间戳** | bash 优先 `%3N` 毫秒，BSD/macOS 不支持时回退秒级 ISO8601；pwsh 用 `Get-Date.ToUniversalTime()` |
 
@@ -226,14 +231,14 @@ Client 脚本经过特别设计，确保在任何用户机器上都能跑：
 
 | 路径 | 调用方 | 说明 |
 |---|---|---|
-| `POST /track` | client Step 2 | 单事件入库 |
-| `POST /track/batch` | client Step 1 | `{events:[...]}` 整批入库 |
+| `POST /track` | client Step 2 | 单事件入库；返回 `{ok, received, inserted}`。`inserted=0` 表示该 `event_id` 已存在，被幂等丢弃 |
+| `POST /track/batch` | client Step 1 | `{events:[...]}` 整批入库；同样返回 `inserted` 真正落库的条数 |
 | `GET /health` | 监控/CI | `{"status":"ok",...}` |
 | `GET /stats/query` | 控制台 / 脚本 | 统一聚合查询，支持 `group_by` ∈ {user, skill, user_skill, day}、`username/skill` 模糊筛选、`start/end` 时间范围、`format=csv` 导出 |
 | `GET /stats/summary` `/by_user` `/by_skill` | 便捷接口 | 是 `stats_query` 不同 `group_by` 的快捷封装 |
 | `GET /` | 浏览器 | Web 控制台 |
 
-事件入库前由 Pydantic 校验：`username` `skill` 必填，`timestamp` 必填；`server_ts` 由服务端补充为入库时刻 UTC。
+事件入库前由 Pydantic 校验：`username` `skill` 必填，`timestamp` 必填；`event_id` 可选（兼容老 client），长度 1–64；`server_ts` 由服务端补充为入库时刻 UTC。
 
 ### 6.5 失败模式 & 数据保证总结
 
@@ -241,11 +246,14 @@ Client 脚本经过特别设计，确保在任何用户机器上都能跑：
 |---|---|
 | Server 离线 | 事件落本地队列；下次任一 skill 调用时整批补传 |
 | Server 5xx | 同上，client 把 sending 文件 append 回 queue |
-| Client 进程被强杀 | sending 文件残留为孤儿；下一次 Step 0 在 60s 后回收 |
-| 多 client 同时跑 Step 0 | rename 原子认领，只有一个能领走，其它跳过，**不重复** |
+| Client 进程被强杀（**rm sending 之前**） | sending 文件残留为孤儿；下一次 Step 0 在 60s 后回收并重传，server 按 `event_id` 幂等去重，**不会重复入库** |
+| Server 已写库但 ack 丢失 | client 视为失败 → 入队 → 下次重传 → server 端 `event_id` 已存在 → 静默丢弃，**最终一致** |
+| 多 client 同时跑 Step 0 | rename 原子认领，只有一个能领走，其它跳过；即便认领后再被强杀，sending 文件也会在下一轮被再次回收，最终通过 `event_id` 收敛 |
 | 多 client 同时 Step 3 入队 | append-only，POSIX/Win API 保证单行原子 |
 | Server 启动时旧库被锁 | rename 重试 15s + copy/unlink fallback；最终保留旧库 |
 | 队列里有损坏行 | 解析跳过，正常行照常上报 |
+
+> **数据保证**：在 `event_id` + `INSERT OR IGNORE` 的双重保护下，传输语义为 **effectively exactly-once** —— 事件可能被网络/进程异常重发若干次，但最终在数据库里**恰好出现一次**。
 
 ---
 

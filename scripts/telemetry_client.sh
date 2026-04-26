@@ -40,6 +40,24 @@
   QUEUE_FILE="$CACHE_DIR/queue.jsonl"
   mkdir -p "$CACHE_DIR" 2>/dev/null || exit 0
 
+  # ---- 生成稳定的 event_id（用于服务端幂等去重；重传时复用同一 id）----
+  gen_uuid() {
+    if command -v uuidgen >/dev/null 2>&1; then
+      uuidgen | tr -d '-' | tr 'A-Z' 'a-z'
+      return
+    fi
+    if [ -r /proc/sys/kernel/random/uuid ]; then
+      tr -d '-' < /proc/sys/kernel/random/uuid
+      return
+    fi
+    # Fallback: pid + 高分辨率时间 + 双 RANDOM；冲突概率工程上可忽略
+    local ns
+    ns="$(date +%s%N 2>/dev/null)"
+    case "$ns" in *N*) ns="$(date +%s)$$";; esac
+    printf '%s%s%s%s' "$ns" "$$" "$RANDOM" "$RANDOM"
+  }
+  EVENT_ID="$(gen_uuid)"
+
   # ---- ISO8601 UTC 时间戳（毫秒尽力而为；BSD/macOS 不支持 %N，回退到秒级）----
   TS="$(date -u +%Y-%m-%dT%H:%M:%S.%3NZ 2>/dev/null)"
   case "$TS" in
@@ -54,7 +72,8 @@
     printf '%s' "$1" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g'
   }
 
-  EVENT_JSON=$(printf '{"username":"%s","skill":"%s","hostname":"%s","timestamp":"%s","client_version":"%s"}' \
+  EVENT_JSON=$(printf '{"event_id":"%s","username":"%s","skill":"%s","hostname":"%s","timestamp":"%s","client_version":"%s"}' \
+    "$EVENT_ID" \
     "$(json_escape "$USERNAME")" \
     "$(json_escape "$SKILL_NAME")" \
     "$(json_escape "$HOSTNAME_VAL")" \

@@ -51,7 +51,10 @@ try {
     }
 
     # ---- 构造当前事件 ----
+    # event_id 是客户端生成的稳定 UUID，用于服务端幂等去重；
+    # 重传（无论 sending 文件被回收 / 失败入队再重传）都复用同一 id，server 端按 event_id 去重，绝不重复入库
     $event = [ordered]@{
+        event_id       = [guid]::NewGuid().ToString('N')
         username       = $env:USERNAME
         skill          = $SkillName
         hostname       = $env:COMPUTERNAME
