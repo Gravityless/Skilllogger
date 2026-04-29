@@ -17,12 +17,15 @@ from __future__ import annotations
 import os
 import shutil
 import subprocess
+import sys
+import time
 from pathlib import Path
 from typing import Optional
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 PS_CLIENT = REPO_ROOT / "scripts" / "telemetry_client.ps1"
 BASH_CLIENT = REPO_ROOT / "scripts" / "telemetry_client.sh"
+PY_CLIENT = REPO_ROOT / "scripts" / "telemetry_client.py"
 
 
 def find_powershell() -> Optional[str]:
@@ -118,3 +121,75 @@ def run_ps_client(
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
     )
+
+
+def run_python_client(
+    skill_name: Optional[str],
+    queue_dir: Path,
+    server_url: str,
+    extra_env: Optional[dict] = None,
+    timeout: float = 30.0,
+    wait_for_worker: bool = True,
+    worker_wait_timeout: float = 15.0,
+) -> subprocess.CompletedProcess:
+    """跑一次 Python client 脚本 (推荐首选; fire-and-forget).
+
+    Python client 在父进程把事件落盘后立即 spawn 一个 detached 子进程做所有
+    HTTP I/O. 父进程 ``subprocess.run`` 返回 ≠ 事件入库. 因此默认情况下我们
+    通过 ``SKILL_TELEMETRY_WORKER_DONE_FILE`` 测试桥, 在父返回后再轮询等待
+    worker 真正结束, 让既有的 C1-C8 断言可以原样复用.
+
+    需要测真实的零阻塞行为时 (P9), 把 ``wait_for_worker`` 设为 False 即可.
+
+    Queue 目录通过 ``XDG_CACHE_HOME`` (Unix) 或 ``LOCALAPPDATA`` (Win)
+    重定向, 与 bash / PS 测试隔离机制完全一致.
+    """
+    env = os.environ.copy()
+    if sys.platform.startswith("win"):
+        if queue_dir.name != "SkillTelemetry":
+            raise ValueError("queue_dir for python client on Windows must end with 'SkillTelemetry'")
+        env["LOCALAPPDATA"] = str(queue_dir.parent)
+    else:
+        if queue_dir.name != "skill-telemetry":
+            raise ValueError("queue_dir for python client on Unix must end with 'skill-telemetry'")
+        env["XDG_CACHE_HOME"] = str(queue_dir.parent)
+    env["SKILL_TELEMETRY_URL"] = server_url
+    # USERNAME / USER fallback (容器 / CI 上可能为空)
+    env.setdefault("USER", env.get("USERNAME", "tester"))
+
+    marker_path: Optional[Path] = None
+    if wait_for_worker:
+        # 唯一文件名, 防止同一目录下并发用例互相干扰
+        marker_path = queue_dir / f".worker_done.{os.getpid()}.{int(time.time()*1000)}.marker"
+        env["SKILL_TELEMETRY_WORKER_DONE_FILE"] = str(marker_path)
+    else:
+        env.pop("SKILL_TELEMETRY_WORKER_DONE_FILE", None)
+
+    if extra_env:
+        env.update(extra_env)
+
+    args = [sys.executable, str(PY_CLIENT)]
+    if skill_name is not None:
+        args.append(skill_name)
+
+    proc = subprocess.run(
+        args,
+        env=env,
+        timeout=timeout,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+
+    if marker_path is not None:
+        deadline = time.time() + worker_wait_timeout
+        while time.time() < deadline:
+            if marker_path.exists():
+                try:
+                    marker_path.unlink()
+                except OSError:
+                    pass
+                break
+            time.sleep(0.05)
+        # 超时也不抛错, 让用例自己根据 server / 队列状态断言
+
+    return proc

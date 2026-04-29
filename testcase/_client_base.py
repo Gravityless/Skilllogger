@@ -50,6 +50,8 @@ class _ClientTestMixin:
     def _run(self, skill, queue_dir, server_url, extra_env=None):
         if self.CLIENT_KIND == "bash":
             return client_runner.run_bash_client(skill, queue_dir, server_url, extra_env)
+        if self.CLIENT_KIND == "python":
+            return client_runner.run_python_client(skill, queue_dir, server_url, extra_env)
         return client_runner.run_ps_client(skill, queue_dir, server_url, extra_env)
 
     def _queue_file(self, qd: Path) -> Path:
